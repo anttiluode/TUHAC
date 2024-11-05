@@ -730,7 +730,7 @@ Primary metrics used for validation:
 
 #### 1. Coherence Preservation
 
-![Hub Coherence Graph](#)
+![Hub Coherence Graph](images/hub_coherence.png)
 
 Key observations:
 
@@ -742,7 +742,7 @@ Key observations:
 
 #### 2. Ratio Dynamics
 
-![Ratio Stability Analysis](#)
+![Ratio Stability Analysis](images/ratio_stability.png)
 
 Pattern analysis:
 
@@ -796,7 +796,7 @@ Pattern analysis:
 
 #### 2. Hub Navigation Patterns
 
-![State Navigation Map](#)
+![State Navigation Map](images/state_navigation_map.png)
 
 Transition characteristics:
 
@@ -1227,12 +1227,6 @@ The universal hub architecture offers solutions to longstanding debates in consc
 ### E. Final Thoughts
 
 The Universal Hub Architecture offers a promising new framework for understanding consciousness, uniting theoretical concepts with empirical evidence. By revealing the mathematical underpinnings of conscious experience and its transitions between states, this work lays the foundation for future research and applications that could profoundly impact neuroscience, medicine, and artificial intelligence.
-
----
-
-## References
-
-[References would be listed here, following appropriate academic citation guidelines.]
 
 ---
 
