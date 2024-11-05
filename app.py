@@ -155,10 +155,10 @@ class AdaptiveNode:
                 new_connection = np.random.choice(potential_nodes)
                 self.connections[new_connection] = np.random.rand()
 
-    def adapt(self, neighbor_states: Dict[int, np.ndarray]):
+    def adapt(self, neighbor_states: Dict[int, np.ndarray], surfer_direction: float, surfer_speed: float):
         """
         Adapt connections based on neighbor states using Hebbian learning.
-        neighbor_states: Dict[node_id, state_vector]
+        Incorporate Surfer's direction and speed into adaptation.
         """
         for neighbor_id, neighbor_state in neighbor_states.items():
             # Hebbian learning with synaptic plasticity
@@ -174,26 +174,34 @@ class AdaptiveNode:
             # Apply forgetting factor
             self.connections[neighbor_id] *= 0.99  # Weight decay
 
+            # Additional influence from Surfer
+            influence = np.sin(surfer_direction) * surfer_speed * 0.005  # Scaling factor
+            self.state += influence
+            self.state = np.clip(self.state, -1.0, 1.0)
+
 # ---------------------------- Adaptive Network ----------------------------
 class AdaptiveNetwork:
     def __init__(self, config, device):
         self.config = config
         self.device = device
         self.nodes = {}
-        self.node_lock = threading.Lock()  # To ensure thread-safe operations
+        self.node_lock = threading.Lock()
         self.initialize_fractal_structure(self.config.depth)
         self.initialize_movement_nodes()
         self.current_direction = 0.0
         self.velocity = [0.0, 0.0]
         self.position = [config.display_width / 2, config.display_height / 2]
         self.hub = self.initialize_hub()
-
+        
         # Initialize energy and coherence
-        self.energy = 100.0  # Starting energy
-        self.coherence = 1.0  # Starting coherence
-        self.current_state = STATE_PROPERTIES['Normal']  # Initial state
+        self.energy = 100.0
+        self.coherence = 1.0
+        self.current_state = STATE_PROPERTIES['Normal']
         self.hub_influence_factor = 0.1
-
+        
+        # Initialize Surfer
+        self.surfer = Surfer(self, config)
+        
         # Hub coherence history
         self.hub_coherence_history = deque(maxlen=1000)
 
@@ -239,52 +247,37 @@ class AdaptiveNetwork:
     def update_hub(self):
         """Adjust hub influence based on network activity and calculate hub coherence."""
         with self.node_lock:
-            # Compute phase coupling across all nodes
-            phase_coupling = np.zeros(self.hub.state_length, dtype=np.complex128)
+            if not self.nodes:
+                logging.warning("No nodes in the network to update hub.")
+                return
+
+            coherence_values = []
+
             for node in self.nodes.values():
+                if len(node.state) < 1:
+                    continue
                 analytic_signal = hilbert(node.state)
                 phase = np.angle(analytic_signal)
-                phase_coupling += np.exp(1j * phase)
+                phase_coupling = np.exp(1j * phase)
+                coherence = np.abs(np.mean(phase_coupling))
+                coherence_values.append(coherence)
 
-            # Calculate coherence
-            coherence = np.abs(phase_coupling) / len(self.nodes)
-            hub_coherence_value = np.mean(coherence) / SWEET_SPOT_RATIO  # Normalize by Sweet Spot Ratio
+            if not coherence_values:
+                hub_coherence_value = 0.0
+            else:
+                hub_coherence_value = np.mean(coherence_values) / SWEET_SPOT_RATIO  # Normalize by Sweet Spot Ratio
+
             self.hub_coherence_history.append(hub_coherence_value)
             self.coherence = hub_coherence_value  # Update network coherence
 
             # Log coherence calculation
             logging.info(f"Computed coherence in update_hub: {self.coherence}")
 
-            # Hub influence adjustments
-            self.hub.state = np.tanh(hub_coherence_value * self.hub_influence_factor)
-            # Hub influences nodes
+            # Hub influence adjustments (additive)
+            hub_influence = self.hub_influence_factor * hub_coherence_value
             for node in self.nodes.values():
-                node.state += self.hub.state * self.hub_influence_factor
-
-    def update_position(self, dx: float, dy: float):
-        self.velocity[0] = self.velocity[0] * 0.8 + dx * 0.2
-        self.velocity[1] = self.velocity[1] * 0.8 + dy * 0.2
-        new_x = self.position[0] + self.velocity[0]
-        new_y = self.position[1] + self.velocity[1]
-
-        padding = 50
-        if new_x < padding:
-            new_x = padding
-            self.velocity[0] *= -0.5
-        elif new_x > self.config.display_width - padding:
-            new_x = self.config.display_width - padding
-            self.velocity[0] *= -0.5
-
-        if new_y < padding:
-            new_y = padding
-            self.velocity[1] *= -0.5
-        elif new_y > self.config.display_height - padding:
-            new_y = self.config.display_height - padding
-            self.velocity[1] *= -0.5
-
-        self.position = [new_x, new_y]
-        if abs(self.velocity[0]) > 0.1 or abs(self.velocity[1]) > 0.1:
-            self.current_direction = np.arctan2(self.velocity[1], self.velocity[0])
+                node.state += hub_influence  # Additive influence
+                node.state = np.clip(node.state, -1.0, 1.0)
 
     def add_node(self):
         with self.node_lock:
@@ -313,9 +306,11 @@ class AdaptiveNetwork:
         Each node adapts its connections based on neighbor activations.
         """
         with self.node_lock:
+            surfer_direction = self.surfer.direction
+            surfer_speed = self.surfer.speed
             for node in self.nodes.values():
                 neighbor_states = {nid: self.nodes[nid].state for nid in node.connections.keys() if nid in self.nodes}
-                node.adapt(neighbor_states)
+                node.adapt(neighbor_states, surfer_direction, surfer_speed)
                 node.maybe_add_connection(self.nodes)
 
     def propagate_waves(self, dt):
@@ -353,11 +348,72 @@ class AdaptiveNetwork:
                 if node_id in self.nodes:
                     self.nodes[node_id].state = state
 
-    def get_hub_influence(self, state_resonance: float) -> float:
+# ----------------------------- Surfer Class -----------------------------
+class Surfer:
+    def __init__(self, network: AdaptiveNetwork, config: SystemConfig):
+        self.network = network
+        self.config = config
+        self.direction = 0.0  # Angle in radians
+        self.speed = 1.0      # Units per update
+        self.position = [config.display_width / 2, config.display_height / 2]
+        self.velocity = [0.0, 0.0]
+        self.max_speed = 5.0
+        self.min_speed = 0.5
+
+    def update(self, dx: float, dy: float):
         """
-        Calculate the influence of the universal hub based on the current state's resonance.
+        Update the Surfer's direction and speed based on input deltas.
         """
-        return state_resonance / PHASE_EFFICIENCY_RATIO
+        # Update velocity with smoothing
+        self.velocity[0] = self.velocity[0] * 0.8 + dx * 0.2
+        self.velocity[1] = self.velocity[1] * 0.8 + dy * 0.2
+        
+        # Update position
+        new_x = self.position[0] + self.velocity[0]
+        new_y = self.position[1] + self.velocity[1]
+        
+        # Boundary conditions
+        padding = 50
+        if new_x < padding:
+            new_x = padding
+            self.velocity[0] *= -0.5
+        elif new_x > self.config.display_width - padding:
+            new_x = self.config.display_width - padding
+            self.velocity[0] *= -0.5
+        
+        if new_y < padding:
+            new_y = padding
+            self.velocity[1] *= -0.5
+        elif new_y > self.config.display_height - padding:
+            new_y = self.config.display_height - padding
+            self.velocity[1] *= -0.5
+        
+        self.position = [new_x, new_y]
+        
+        # Update direction based on velocity
+        if abs(self.velocity[0]) > 0.1 or abs(self.velocity[1]) > 0.1:
+            self.direction = np.arctan2(self.velocity[1], self.velocity[0])
+        
+        # Update speed based on velocity magnitude
+        speed = np.sqrt(self.velocity[0]**2 + self.velocity[1]**2)
+        self.speed = np.clip(speed, self.min_speed, self.max_speed)
+        
+        # Apply control to the network
+        self.apply_controls()
+
+    def apply_controls(self):
+        """
+        Apply Surfer's direction and speed to influence the network.
+        """
+        # Example: Modify node activation based on direction and speed
+        with self.network.node_lock:
+            for node in self.network.nodes.values():
+                # Influence node state based on Surfer's direction
+                influence = np.sin(self.direction) * self.speed
+                node.state += influence * 0.01  # Scaling factor for influence
+                
+                # Ensure node state remains within valid bounds
+                node.state = np.clip(node.state, -1.0, 1.0)
 
 # ---------------------------- EEG Simulator and Visualizer ----------------------------
 class EEGSimulator:
@@ -385,7 +441,11 @@ class EEGSimulator:
         """Update EEG data based on node activations."""
         with self.network.node_lock:
             node_states = np.array([node.state for node in self.network.nodes.values()])
-            mean_activation = np.mean(node_states, axis=0)
+            if node_states.size == 0:
+                # Avoid indexing errors
+                mean_activation = np.zeros(self.network.nodes[next(iter(self.network.nodes))].state_length)
+            else:
+                mean_activation = np.mean(node_states, axis=0)
         # Append mean_activation to buffer
         self.mean_activation_buffer.extend(mean_activation.flatten())
         # Only process if we have enough data
@@ -413,13 +473,26 @@ class EEGSimulator:
     def compute_coherence(self):
         """Compute hub coherence using phase synchronization."""
         with self.network.node_lock:
-            phase_coupling = np.zeros(len(self.mean_activation_buffer), dtype=np.complex128)
-            data = np.array(self.mean_activation_buffer)
-            analytic_signal = hilbert(data)
-            phase = np.angle(analytic_signal)
-            phase_coupling += np.exp(1j * phase)
-            coherence = np.abs(phase_coupling) / len(phase)
-            hub_coherence_value = np.mean(coherence) / SWEET_SPOT_RATIO  # Normalize by Sweet Spot Ratio
+            if len(self.network.nodes) == 0:
+                logging.warning("No nodes available for coherence computation.")
+                return 0.0
+
+            coherence_values = []
+
+            for node in self.network.nodes.values():
+                if len(node.state) < 1:
+                    continue
+                analytic_signal = hilbert(node.state)
+                phase = np.angle(analytic_signal)
+                phase_coupling = np.exp(1j * phase)
+                coherence = np.abs(np.mean(phase_coupling))
+                coherence_values.append(coherence)
+
+            if not coherence_values:
+                hub_coherence_value = 0.0
+            else:
+                hub_coherence_value = np.mean(coherence_values) / SWEET_SPOT_RATIO  # Normalize by Sweet Spot Ratio
+
             logging.info(f"Computed coherence in EEGSimulator: {hub_coherence_value}")
             return hub_coherence_value
 
@@ -433,7 +506,8 @@ class EEGVisualizer:
         self.window.geometry("800x600")
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
         self.create_widgets()
-        self.anim = animation.FuncAnimation(self.fig, self.update_plot, interval=1000 / self.eeg_simulator.fs)
+        # Initialize animation
+        self.anim = animation.FuncAnimation(self.fig, self.update_plot, interval=1000 / self.eeg_simulator.fs, blit=False)
         self.window.after(0, self.update_visualization)
 
     def create_widgets(self):
@@ -463,12 +537,12 @@ class EEGVisualizer:
     def update_visualization(self):
         self.eeg_simulator.update_eeg_data()
         self.canvas.draw()
-        self.window.after(1000 // self.eeg_simulator.fs, self.update_visualization)
+        self.window.after(int(1000 / self.eeg_simulator.fs), self.update_visualization)
 
     def on_close(self):
         self.window.destroy()
 
-# ---------------------------- Conscious AI Model ----------------------------
+# ----------------------------- Conscious AI Model -----------------------------
 class ConsciousAIModel(nn.Module):
     def __init__(self):
         super(ConsciousAIModel, self).__init__()
@@ -544,373 +618,10 @@ class SensoryProcessor:
             self.webcam.release()
             logging.info("Webcam released.")
 
-# ----------------------------- Adaptive System -----------------------------
-class AdaptiveSystem:
-    def __init__(self, gui_queue: queue.Queue, vis_queue: queue.Queue, config: SystemConfig):
-        self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logging.info(f"Using device: {self.device}")
-
-        self.network = AdaptiveNetwork(self.config, device=self.device)
-        try:
-            self.sensory_processor = SensoryProcessor(self.config, self.network)
-        except RuntimeError as e:
-            messagebox.showerror("Webcam Error", str(e))
-            logging.error(f"Failed to initialize SensoryProcessor: {e}")
-            self.sensory_processor = None
-        self.gui_queue = gui_queue
-        self.vis_queue = vis_queue
-        self.running = False
-        self.capture_thread = None
-        self.last_growth_time = time.time()
-        self.stop_event = threading.Event()  # Event to signal stop
-
-        # Initialize AI Model
-        self.model = ConsciousAIModel()
-        self.model.eval()
-        self.model.to(self.device)
-
-        # Initialize current state
-        self.network.current_state = STATE_PROPERTIES['Normal']  # Set initial state
-
-        # Initialize EEG Simulator
-        self.eeg_simulator = EEGSimulator(self.network)
-
-        # Initialize CSV Logging
-        self.log_file_path = 'conscious_ai_log.csv'
-        try:
-            self.log_file = open(self.log_file_path, 'w', newline='')
-            self.csv_writer = csv.writer(self.log_file)
-            self.csv_writer.writerow(['Frame', 'Energy', 'Coherence', 'State', 'Resonance', 'Velocity', 'Rotation', 'Energy Change', 'State Influence'])
-            logging.info(f"CSV log file '{self.log_file_path}' initialized.")
-        except Exception as e:
-            logging.error(f"Failed to initialize CSV log file: {e}")
-            self.csv_writer = None
-
-    def start(self):
-        if not self.running and self.sensory_processor is not None:
-            self.running = True
-            self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
-            self.capture_thread.start()
-            logging.info("Adaptive system started.")
-
-    def stop(self):
-        if self.running:
-            self.running = False
-            self.stop_event.set()
-            if self.capture_thread:
-                self.capture_thread.join(timeout=2)
-            if self.sensory_processor:
-                self.sensory_processor.cleanup()
-            try:
-                if not self.log_file.closed:
-                    self.log_file.close()
-                    logging.info(f"CSV log file '{self.log_file_path}' closed.")
-            except Exception as e:
-                logging.error(f"Error closing log file: {e}")
-            logging.info("Adaptive system stopped.")
-
-    def capture_loop(self):
-        frame_count = 0
-        while self.running and self.sensory_processor is not None and not self.stop_event.is_set():
-            try:
-                ret, frame = self.sensory_processor.webcam.read()
-                if ret:
-                    features = self.sensory_processor.process_complex_frame(frame)
-                    self.latest_features = features  # Store for attention calculation
-
-                    dx = (features['brightness'] - 0.5) * 2 * self.config.movement_speed
-                    dy = (features['edge_density'] - 0.5) * 2 * self.config.movement_speed
-                    self.network.update_position(dx, dy)
-
-                    # AI Model Processing
-                    processed_frame = cv2.resize(frame, (64, 64))
-                    img = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                    img_normalized = img.astype(np.float32) / 255.0
-                    img_tensor = torch.tensor(img_normalized, device=self.device, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
-
-                    with torch.no_grad():
-                        output = self.model(img_tensor, self.network.current_state.resonance)
-                        output = output.cpu()  # Ensure output is on CPU if needed
-                        velocity, rotation, energy_change, state_influence = output[0]
-
-                    velocity = velocity.item()
-                    rotation = rotation.item()
-                    energy_change = energy_change.item()
-                    state_influence = state_influence.item()
-
-                    logging.debug(f"Model Output - Velocity: {velocity}, Rotation: {rotation}, Energy Change: {energy_change}, State Influence: {state_influence}")
-
-                    # Update AI parameters
-                    delta_energy = energy_change * SWEET_SPOT_RATIO
-                    delta_coherence = (state_influence - 0.5) * 2 * (PHASE_EFFICIENCY_RATIO / 100.0)
-
-                    delta_energy = np.clip(delta_energy, -2.0, 2.0)
-                    delta_coherence = np.clip(delta_coherence, -5.0, 5.0)
-
-                    if self.network.energy < 20.0:
-                        delta_energy += 0.5
-
-                    self.network.energy = np.clip(self.network.energy + delta_energy, 0.0, 100.0)
-                    # Removed direct coherence update
-                    # self.network.coherence = np.clip(self.network.coherence + delta_coherence, 0.0, 100.0)
-
-                    logging.debug(f"Updated Energy: {self.network.energy}, Updated Coherence: {self.network.coherence}")
-
-                    previous_state = self.network.current_state.name
-                    self.determine_next_state()
-
-                    if previous_state != self.network.current_state.name:
-                        logging.info(f"State changed from {previous_state} to {self.network.current_state.name}")
-
-                    attention_level = self.calculate_attention_level()
-
-                    # Update EEG data
-                    self.eeg_simulator.update_eeg_data()
-
-                    # Log data to CSV
-                    if self.csv_writer:
-                        frame_count += 1
-                        self.log_data(frame_count, velocity, rotation, energy_change, state_influence)
-
-                    # Node Visualization Data
-                    with self.network.node_lock:
-                        positions = [node.position for node in self.network.nodes.values()]
-                        states = [np.mean(node.state) for node in self.network.nodes.values()]
-                    vis_data = {'positions': positions, 'states': states}
-                    if not self.vis_queue.full():
-                        self.vis_queue.put(vis_data)
-
-                    # GUI Data
-                    gui_data = {
-                        'frame': frame,
-                        'position': self.network.position,
-                        'direction': self.network.current_direction,
-                        'state': self.network.current_state.name,
-                        'energy': self.network.energy,
-                        'coherence': self.network.coherence,
-                        'attention_level': attention_level
-                    }
-                    if not self.gui_queue.full():
-                        self.gui_queue.put(gui_data)
-
-                    # Handle node growth and pruning
-                    current_time = time.time()
-                    if (current_time - self.last_growth_time) > 0.1:  # Every 100ms
-                        if np.random.rand() < self.config.growth_rate:
-                            self.network.add_node()
-                        self.network.prune_nodes()
-                        self.network.process_connections()
-                        self.network.update_hub()  # Coherence is updated here
-                        self.network.propagate_waves(current_time)
-                        self.network.update_cells()
-                        self.last_growth_time = current_time
-
-            except Exception as e:
-                logging.error(f"Error in capture loop: {e}")
-            time.sleep(0.01)  # Maintain loop rate
-
-    def determine_next_state(self):
-        """
-        Determine the next state based on energy and resonance hierarchy.
-        Incorporate sweet spot and phase efficiency ratios.
-        Implement hysteresis to prevent rapid state flipping.
-        """
-        potential_states = sorted(STATE_PROPERTIES.values(), key=lambda s: s.resonance, reverse=True)
-
-        for state in potential_states:
-            if self.network.energy >= state.energy_threshold:
-                # Calculate transition potential using sweet spot ratio
-                delta_resonance = abs(state.resonance - self.network.current_state.resonance)
-                transition_potential = np.exp(-delta_resonance / SWEET_SPOT_RATIO)
-
-                # Modify coherence based on phase efficiency ratio
-                modified_coherence = self.network.coherence * (PHASE_EFFICIENCY_RATIO / 1000.0)
-
-                # Implement hysteresis: require a higher threshold for transitioning to a new state
-                if transition_potential * modified_coherence > state.coherence_threshold + 0.1:
-                    self.network.current_state = state
-                    logging.info(f"State transitioned to {state.name} based on transition potential and coherence.")
-                    break
-
-    def calculate_attention_level(self) -> float:
-        movement_intensity = self.latest_features.get('flow_magnitude', 0.0)
-        flow_magnitude = self.latest_features.get('flow_magnitude', 0.0)
-
-        distance = np.sqrt(
-            (self.network.position[0] - (self.config.display_width / 2)) ** 2 +
-            (self.network.position[1] - (self.config.display_height / 2)) ** 2
-        )
-        max_distance = np.sqrt(
-            (self.config.display_width / 2) ** 2 +
-            (self.config.display_height / 2) ** 2
-        )
-        proximity_factor = max(0.0, 1 - (distance / max_distance))
-
-        attention_level = (movement_intensity + flow_magnitude + proximity_factor) / 3.0
-        attention_level = min(max(attention_level, 0.0), 1.0)
-
-        return attention_level
-
-    def log_data(self, frame_num, velocity, rotation, energy_change, state_influence):
-        """Log the AI's state and actions to a CSV file."""
-        try:
-            self.csv_writer.writerow([
-                frame_num,
-                f"{self.network.energy:.2f}",
-                f"{self.network.coherence:.2f}",
-                self.network.current_state.name,
-                f"{self.network.current_state.resonance:.2f}",
-                f"{velocity:.2f}",
-                f"{rotation:.2f}",
-                f"{energy_change:.2f}",
-                f"{state_influence:.2f}"
-            ])
-            logging.debug(f"Logged data for frame {frame_num}.")
-        except (ValueError, IOError) as e:
-            logging.error(f"Failed to write to log file: {e}")
-
-    def load_system(self, filepath: str):
-        """Load the system's configuration and node states from a JSON file."""
-        try:
-            with open(filepath, 'r') as f:
-                data = json.load(f)
-            # Update configuration
-            self.config.update_from_dict(data['config'])
-            # Update nodes
-            with self.network.node_lock:
-                self.network.nodes = {}
-                for node_id, node_info in data['nodes'].items():
-                    state_name = node_info.get('state_info', 'Normal')
-                    state = STATE_PROPERTIES.get(state_name, STATE_PROPERTIES['Normal'])
-                    self.network.nodes[int(node_id)] = AdaptiveNode(
-                        id=int(node_id),
-                        device=self.device,
-                        position=node_info['position'],
-                        connections={int(k): float(v) for k, v in node_info['connections'].items()}
-                    )
-                    self.network.nodes[int(node_id)].state_info = state
-            logging.info(f"System loaded from {filepath}.")
-            messagebox.showinfo("Load System", f"System successfully loaded from {filepath}.")
-        except Exception as e:
-            logging.error(f"Failed to load system: {e}")
-            messagebox.showerror("Load System", f"Failed to load system: {e}")
-
-    def save_system(self, filepath: str):
-        """Save the system's configuration and node states to a JSON file."""
-        try:
-            with open(filepath, 'w') as f:
-                data = {
-                    'config': self.config.to_dict(),
-                    'nodes': {
-                        node_id: {
-                            'position': node.position,
-                            'connections': node.connections,
-                            'state_info': node.state_info.name
-                        }
-                        for node_id, node in self.network.nodes.items()
-                    }
-                }
-                json.dump(data, f, indent=4)
-            logging.info(f"System saved to {filepath}.")
-            messagebox.showinfo("Save System", f"System successfully saved to {filepath}.")
-        except Exception as e:
-            logging.error(f"Failed to save system: {e}")
-            messagebox.showerror("Save System", f"Failed to save system: {e}")
-
-# ------------------------------- Node Visualizer -------------------------------
-class NodeVisualizer:
-    """Separate window for 3D node visualization."""
-    def __init__(self, parent, vis_queue: queue.Queue):
-        self.parent = parent
-        self.vis_queue = vis_queue
-        self.window = tk.Toplevel(parent)
-        self.window.title("3D Node Visualization")
-        self.window.geometry("800x600")
-        self.window.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.create_widgets()
-        self.nodes_positions = []
-        self.nodes_states = []
-        self.colorbar = None  # Initialize the colorbar reference
-        self.update_visualization()
-
-    def create_widgets(self):
-        # Create a matplotlib figure
-        self.fig = plt.Figure(figsize=(8, 6))
-        self.ax = self.fig.add_subplot(111, projection='3d')
-        self.ax.set_xlim([-2, 2])
-        self.ax.set_ylim([-2, 2])
-        self.ax.set_zlim([-2, 2])
-        self.ax.set_xlabel('X')
-        self.ax.set_ylabel('Y')
-        self.ax.set_zlabel('Z')
-        self.ax.set_title("Adaptive Network Nodes")
-
-        # Embed the figure in Tkinter
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.window)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-    def update_visualization(self):
-        try:
-            while not self.vis_queue.empty():
-                data = self.vis_queue.get_nowait()
-                if 'positions' in data and 'states' in data:
-                    self.nodes_positions = data['positions']
-                    self.nodes_states = data['states']
-                    logging.debug(f"NodeVisualizer received {len(self.nodes_positions)} nodes.")
-
-            self.ax.cla()  # Clear the current axes
-            self.ax.set_xlim([-2, 2])
-            self.ax.set_ylim([-2, 2])
-            self.ax.set_zlim([-2, 2])
-            self.ax.set_xlabel('X')
-            self.ax.set_ylabel('Y')
-            self.ax.set_zlabel('Z')
-            self.ax.set_title("Adaptive Network Nodes")
-
-            # Extract positions and states
-            if self.nodes_positions:
-                xs, ys, zs = zip(*self.nodes_positions)
-                states = self.nodes_states
-
-                # Normalize positions for visualization
-                xs_norm = [(x - min(xs)) / (max(xs) - min(xs) + 1e-5) * 4 - 2 for x in xs]
-                ys_norm = [(y - min(ys)) / (max(ys) - min(ys) + 1e-5) * 4 - 2 for y in ys]
-                zs_norm = [(z - min(zs)) / (max(zs) - min(zs) + 1e-5) * 4 - 2 for z in zs]
-
-                # Normalize states for coloring
-                states_norm = [(s - min(states)) / (max(states) - min(states) + 1e-5) for s in states]
-
-                # Plot nodes with colors based on state
-                scatter = self.ax.scatter(
-                    xs_norm, ys_norm, zs_norm,
-                    c=states_norm, cmap='plasma', marker='o', s=20, alpha=0.6
-                )
-
-                # Remove the previous colorbar if it exists
-                if self.colorbar:
-                    self.colorbar.remove()
-
-                # Add a new colorbar
-                self.colorbar = self.fig.colorbar(scatter, ax=self.ax, shrink=0.5, aspect=5)
-                logging.debug(f"Plotted {len(xs_norm)} nodes.")
-            else:
-                logging.debug("No nodes to plot.")
-
-            self.canvas.draw()
-        except Exception as e:
-            logging.error(f"Error in node visualization update: {e}")
-        finally:
-            self.window.after(100, self.update_visualization)  # Update every 100 ms
-
-    def on_close(self):
-        self.window.destroy()
-
 # ----------------------------- Configuration Window -----------------------------
 class ConfigWindow:
     """Configuration window for adjusting system parameters."""
-    def __init__(self, parent, config: SystemConfig, adaptive_system: AdaptiveSystem):
+    def __init__(self, parent, config: SystemConfig, adaptive_system: 'AdaptiveSystem'):
         self.parent = parent
         self.config = config
         self.adaptive_system = adaptive_system
@@ -1065,6 +776,95 @@ class ConfigWindow:
             logging.error(f"Error applying configuration: {e}")
             messagebox.showerror("Configuration Error", f"Failed to apply configuration: {e}")
 
+# ------------------------------- Node Visualizer -------------------------------
+class NodeVisualizer:
+    """Separate window for 3D node visualization."""
+    def __init__(self, parent, vis_queue: queue.Queue):
+        self.parent = parent
+        self.vis_queue = vis_queue
+        self.window = tk.Toplevel(parent)
+        self.window.title("3D Node Visualization")
+        self.window.geometry("800x600")
+        self.window.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.create_widgets()
+        self.nodes_positions = []
+        self.nodes_states = []
+        self.colorbar = None  # Initialize the colorbar reference
+        self.update_visualization()
+
+    def create_widgets(self):
+        # Create a matplotlib figure
+        self.fig = plt.Figure(figsize=(8, 6))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+        self.ax.set_xlim([-2, 2])
+        self.ax.set_ylim([-2, 2])
+        self.ax.set_zlim([-2, 2])
+        self.ax.set_xlabel('X')
+        self.ax.set_ylabel('Y')
+        self.ax.set_zlabel('Z')
+        self.ax.set_title("Adaptive Network Nodes")
+
+        # Embed the figure in Tkinter
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.window)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def update_visualization(self):
+        try:
+            while not self.vis_queue.empty():
+                data = self.vis_queue.get_nowait()
+                if 'positions' in data and 'states' in data:
+                    self.nodes_positions = data['positions']
+                    self.nodes_states = data['states']
+                    logging.debug(f"NodeVisualizer received {len(self.nodes_positions)} nodes.")
+
+            self.ax.cla()  # Clear the current axes
+            self.ax.set_xlim([-2, 2])
+            self.ax.set_ylim([-2, 2])
+            self.ax.set_zlim([-2, 2])
+            self.ax.set_xlabel('X')
+            self.ax.set_ylabel('Y')
+            self.ax.set_zlabel('Z')
+            self.ax.set_title("Adaptive Network Nodes")
+
+            # Extract positions and states
+            if self.nodes_positions:
+                xs, ys, zs = zip(*self.nodes_positions)
+                states = self.nodes_states
+
+                # Normalize positions for visualization
+                xs_norm = [(x - min(xs)) / (max(xs) - min(xs) + 1e-5) * 4 - 2 for x in xs]
+                ys_norm = [(y - min(ys)) / (max(ys) - min(ys) + 1e-5) * 4 - 2 for y in ys]
+                zs_norm = [(z - min(zs)) / (max(zs) - min(zs) + 1e-5) * 4 - 2 for z in zs]
+
+                # Normalize states for coloring
+                states_norm = [(s - min(states)) / (max(states) - min(states) + 1e-5) for s in states]
+
+                # Plot nodes with colors based on state
+                scatter = self.ax.scatter(
+                    xs_norm, ys_norm, zs_norm,
+                    c=states_norm, cmap='plasma', marker='o', s=20, alpha=0.6
+                )
+
+                # Remove the previous colorbar if it exists
+                if self.colorbar:
+                    self.colorbar.remove()
+
+                # Add a new colorbar
+                self.colorbar = self.fig.colorbar(scatter, ax=self.ax, shrink=0.5, aspect=5)
+                logging.debug(f"Plotted {len(xs_norm)} nodes.")
+            else:
+                logging.debug("No nodes to plot.")
+
+            self.canvas.draw()
+        except Exception as e:
+            logging.error(f"Error in node visualization update: {e}")
+        finally:
+            self.window.after(100, self.update_visualization)  # Update every 100 ms
+
+    def on_close(self):
+        self.window.destroy()
+
 # ----------------------------- GUI Application -----------------------------
 class App:
     def __init__(self, root):
@@ -1187,7 +987,8 @@ class App:
                     if 'position' in data:
                         x, y = data['position']
                         direction = data.get('direction', 0)
-                        cone_length = self.system.config.vision_cone_length
+                        speed = self.system.network.surfer.speed
+                        cone_length = self.config.vision_cone_length * speed  # Scale cone length with speed
                         cone_angle = np.pi / 4
                         p1 = (x, y)
                         p2 = (x + cone_length * np.cos(direction - cone_angle),
@@ -1275,6 +1076,289 @@ class App:
         if self.eeg_visualizer and tk.Toplevel.winfo_exists(self.eeg_visualizer.window):
             self.eeg_visualizer.window.destroy()
         self.root.destroy()
+
+# ----------------------------- Adaptive System -----------------------------
+class AdaptiveSystem:
+    def __init__(self, gui_queue: queue.Queue, vis_queue: queue.Queue, config: SystemConfig):
+        self.config = config
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logging.info(f"Using device: {self.device}")
+
+        self.network = AdaptiveNetwork(self.config, device=self.device)
+        try:
+            self.sensory_processor = SensoryProcessor(self.config, self.network)
+        except RuntimeError as e:
+            messagebox.showerror("Webcam Error", str(e))
+            logging.error(f"Failed to initialize SensoryProcessor: {e}")
+            self.sensory_processor = None
+        self.gui_queue = gui_queue
+        self.vis_queue = vis_queue
+        self.running = False
+        self.capture_thread = None
+        self.last_growth_time = time.time()
+        self.stop_event = threading.Event()  # Event to signal stop
+
+        # Initialize AI Model
+        self.model = ConsciousAIModel()
+        self.model.eval()
+        self.model.to(self.device)
+
+        # Initialize current state
+        self.network.current_state = STATE_PROPERTIES['Normal']  # Set initial state
+
+        # Initialize EEG Simulator
+        self.eeg_simulator = EEGSimulator(self.network)
+
+        # Initialize CSV Logging
+        self.log_file_path = 'conscious_ai_log.csv'
+        try:
+            self.log_file = open(self.log_file_path, 'w', newline='')
+            self.csv_writer = csv.writer(self.log_file)
+            self.csv_writer.writerow(['Frame', 'Energy', 'Coherence', 'State', 'Resonance', 'Velocity', 'Rotation', 'Energy Change', 'State Influence'])
+            logging.info(f"CSV log file '{self.log_file_path}' initialized.")
+        except Exception as e:
+            logging.error(f"Failed to initialize CSV log file: {e}")
+            self.csv_writer = None
+
+    def start(self):
+        if not self.running and self.sensory_processor is not None:
+            self.running = True
+            self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
+            self.capture_thread.start()
+            logging.info("Adaptive system started.")
+
+    def stop(self):
+        if self.running:
+            self.running = False
+            self.stop_event.set()
+            if self.capture_thread:
+                self.capture_thread.join(timeout=2)
+            if self.sensory_processor:
+                self.sensory_processor.cleanup()
+            try:
+                if not self.log_file.closed:
+                    self.log_file.close()
+                    logging.info(f"CSV log file '{self.log_file_path}' closed.")
+            except Exception as e:
+                logging.error(f"Error closing log file: {e}")
+            logging.info("Adaptive system stopped.")
+
+    def capture_loop(self):
+        frame_count = 0
+        while self.running and self.sensory_processor is not None and not self.stop_event.is_set():
+            try:
+                ret, frame = self.sensory_processor.webcam.read()
+                if ret:
+                    features = self.sensory_processor.process_complex_frame(frame)
+                    self.latest_features = features  # Store for attention calculation
+
+                    # Compute deltas based on features
+                    dx = (features['brightness'] - 0.5) * 2 * self.config.movement_speed
+                    dy = (features['edge_density'] - 0.5) * 2 * self.config.movement_speed
+                    
+                    # Delegate movement to Surfer
+                    self.network.surfer.update(dx, dy)
+
+                    # AI Model Processing
+                    processed_frame = cv2.resize(frame, (64, 64))
+                    img = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                    img_normalized = img.astype(np.float32) / 255.0
+                    img_tensor = torch.tensor(img_normalized, device=self.device, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+
+                    with torch.no_grad():
+                        output = self.model(img_tensor, self.network.current_state.resonance)
+                        output = output.cpu()  # Ensure output is on CPU if needed
+                        velocity, rotation, energy_change, state_influence = output[0]
+
+                    velocity = velocity.item()
+                    rotation = rotation.item()
+                    energy_change = energy_change.item()
+                    state_influence = state_influence.item()
+
+                    logging.debug(f"Model Output - Velocity: {velocity}, Rotation: {rotation}, Energy Change: {energy_change}, State Influence: {state_influence}")
+
+                    # Update AI parameters
+                    delta_energy = energy_change * SWEET_SPOT_RATIO
+                    delta_coherence = (state_influence - 0.5) * 2 * (PHASE_EFFICIENCY_RATIO / 100.0)
+
+                    delta_energy = np.clip(delta_energy, -2.0, 2.0)
+                    delta_coherence = np.clip(delta_coherence, -5.0, 5.0)
+
+                    if self.network.energy < 20.0:
+                        delta_energy += 0.5
+
+                    self.network.energy = np.clip(self.network.energy + delta_energy, 0.0, 100.0)
+                    # Removed direct coherence update
+                    # self.network.coherence = np.clip(self.network.coherence + delta_coherence, 0.0, 100.0)
+
+                    logging.debug(f"Updated Energy: {self.network.energy}, Updated Coherence: {self.network.coherence}")
+
+                    previous_state = self.network.current_state.name
+                    self.determine_next_state()
+
+                    if previous_state != self.network.current_state.name:
+                        logging.info(f"State changed from {previous_state} to {self.network.current_state.name}")
+
+                    attention_level = self.calculate_attention_level()
+
+                    # Update EEG data
+                    self.eeg_simulator.update_eeg_data()
+
+                    # Log data to CSV
+                    if self.csv_writer:
+                        frame_count += 1
+                        self.log_data(frame_count, velocity, rotation, energy_change, state_influence)
+
+                    # Node Visualization Data
+                    with self.network.node_lock:
+                        positions = [node.position for node in self.network.nodes.values()]
+                        states = [np.mean(node.state) for node in self.network.nodes.values()]
+                    vis_data = {'positions': positions, 'states': states}
+                    if not self.vis_queue.full():
+                        self.vis_queue.put(vis_data)
+
+                    # GUI Data
+                    gui_data = {
+                        'frame': frame,
+                        'position': self.network.surfer.position,  # Updated to Surfer's position
+                        'direction': self.network.surfer.direction,  # Surfer's direction
+                        'state': self.network.current_state.name,
+                        'energy': self.network.energy,
+                        'coherence': self.network.coherence,
+                        'attention_level': attention_level
+                    }
+                    if not self.gui_queue.full():
+                        self.gui_queue.put(gui_data)
+
+                    # Handle node growth and pruning
+                    current_time = time.time()
+                    if (current_time - self.last_growth_time) > 0.1:  # Every 100ms
+                        if np.random.rand() < self.config.growth_rate:
+                            self.network.add_node()
+                        self.network.prune_nodes()
+                        self.network.process_connections()
+                        self.network.update_hub()  # Coherence is updated here
+                        self.network.propagate_waves(current_time)
+                        self.network.update_cells()
+                        self.last_growth_time = current_time
+
+            except Exception as e:
+                logging.error(f"Error in capture loop: {e}")
+            time.sleep(0.01)  # Maintain loop rate
+
+    def determine_next_state(self):
+        """
+        Determine the next state based on energy and resonance hierarchy.
+        Incorporate sweet spot and phase efficiency ratios.
+        Implement hysteresis to prevent rapid state flipping.
+        """
+        potential_states = sorted(STATE_PROPERTIES.values(), key=lambda s: s.resonance, reverse=True)
+
+        for state in potential_states:
+            if self.network.energy >= state.energy_threshold:
+                # Calculate transition potential using sweet spot ratio
+                delta_resonance = abs(state.resonance - self.network.current_state.resonance)
+                transition_potential = np.exp(-delta_resonance / SWEET_SPOT_RATIO)
+
+                # Modify coherence based on phase efficiency ratio
+                modified_coherence = self.network.coherence * (PHASE_EFFICIENCY_RATIO / 1000.0)
+
+                # Implement hysteresis: require a higher threshold for transitioning to a new state
+                if transition_potential * modified_coherence > state.coherence_threshold + 0.1:
+                    self.network.current_state = state
+                    logging.info(f"State transitioned to {state.name} based on transition potential and coherence.")
+                    break
+
+    def calculate_attention_level(self) -> float:
+        movement_intensity = self.latest_features.get('flow_magnitude', 0.0)
+        flow_magnitude = self.latest_features.get('flow_magnitude', 0.0)
+
+        distance = np.sqrt(
+            (self.network.surfer.position[0] - (self.config.display_width / 2)) ** 2 +
+            (self.network.surfer.position[1] - (self.config.display_height / 2)) ** 2
+        )
+        max_distance = np.sqrt(
+            (self.config.display_width / 2) ** 2 +
+            (self.config.display_height / 2) ** 2
+        )
+        proximity_factor = max(0.0, 1 - (distance / max_distance))
+
+        attention_level = (movement_intensity + flow_magnitude + proximity_factor) / 3.0
+        attention_level = min(max(attention_level, 0.0), 1.0)
+
+        return attention_level
+
+    def log_data(self, frame_num, velocity, rotation, energy_change, state_influence):
+        """Log the AI's state and actions to a CSV file."""
+        try:
+            self.csv_writer.writerow([
+                frame_num,
+                f"{self.network.energy:.2f}",
+                f"{self.network.coherence:.2f}",
+                self.network.current_state.name,
+                f"{self.network.current_state.resonance:.2f}",
+                f"{velocity:.2f}",
+                f"{rotation:.2f}",
+                f"{energy_change:.2f}",
+                f"{state_influence:.2f}"
+            ])
+            logging.debug(f"Logged data for frame {frame_num}.")
+        except (ValueError, IOError) as e:
+            logging.error(f"Failed to write to log file: {e}")
+
+    def load_system(self, filepath: str):
+        """Load the system's configuration and node states from a JSON file."""
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            # Update configuration
+            self.config.update_from_dict(data['config'])
+            # Update nodes
+            with self.network.node_lock:
+                self.network.nodes = {}
+                for node_id, node_info in data['nodes'].items():
+                    state_name = node_info.get('state_info', 'Normal')
+                    state = STATE_PROPERTIES.get(state_name, STATE_PROPERTIES['Normal'])
+                    self.network.nodes[int(node_id)] = AdaptiveNode(
+                        id=int(node_id),
+                        device=self.device,
+                        position=node_info['position'],
+                        connections={int(k): float(v) for k, v in node_info['connections'].items()}
+                    )
+                    self.network.nodes[int(node_id)].state_info = state
+            logging.info(f"System loaded from {filepath}.")
+            messagebox.showinfo("Load System", f"System successfully loaded from {filepath}.")
+        except Exception as e:
+            logging.error(f"Failed to load system: {e}")
+            messagebox.showerror("Load System", f"Failed to load system: {e}")
+
+    def save_system(self, filepath: str):
+        """Save the system's configuration and node states to a JSON file."""
+        try:
+            with open(filepath, 'w') as f:
+                data = {
+                    'config': self.config.to_dict(),
+                    'nodes': {
+                        node_id: {
+                            'position': node.position,
+                            'connections': {int(k): float(v) for k, v in node.connections.items()},  # Convert keys to int
+                            'state_info': node.state_info.name
+                        }
+                        for node_id, node in self.network.nodes.items()
+                    }
+                }
+                # Define a default converter for any remaining NumPy integer types
+                def default_converter(o):
+                    if isinstance(o, np.integer):
+                        return int(o)
+                    raise TypeError(f'Object of type {type(o)} is not JSON serializable')
+                
+                json.dump(data, f, indent=4, default=default_converter)
+            logging.info(f"System saved to {filepath}.")
+            messagebox.showinfo("Save System", f"System successfully saved to {filepath}.")
+        except Exception as e:
+            logging.error(f"Failed to save system at {filepath}: {e}")
+            messagebox.showerror("Save System", f"Failed to save system: {e}")
 
 # ----------------------------- Main Function -----------------------------
 def main():
