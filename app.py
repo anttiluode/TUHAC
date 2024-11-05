@@ -429,7 +429,7 @@ class EEGVisualizer:
         self.window.geometry("800x600")
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
         self.create_widgets()
-        self.anim = animation.FuncAnimation(self.fig, self.update_plot, interval=1000 / eeg_simulator.fs)
+        self.anim = animation.FuncAnimation(self.fig, self.update_plot, interval=1000 / self.eeg_simulator.fs)
         self.window.after(0, self.update_visualization)
 
     def create_widgets(self):
@@ -1116,67 +1116,13 @@ class App:
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
-        # Load Eye Images for Attention Indicator
-        try:
-            # Determine script's directory
-            if getattr(sys, 'frozen', False):
-                # If the application is frozen (e.g., packaged by PyInstaller)
-                script_dir = os.path.dirname(sys.executable)
-            else:
-                # If the application is run as a script
-                script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Optional: Add Attention Level Progress Bar
+        self.attention_progress = ttk.Progressbar(self.root, orient='horizontal', length=200, mode='determinate')
+        self.attention_progress.pack(side=tk.TOP, pady=10)
 
-            logging.debug(f"Script Directory: {script_dir}")
-
-            # Define absolute paths
-            eye_open_path = os.path.join(script_dir, "eye_open.png")
-            eye_closed_path = os.path.join(script_dir, "eye_closed.png")
-
-            logging.debug(f"Eye Open Path: {eye_open_path}")
-            logging.debug(f"Eye Closed Path: {eye_closed_path}")
-
-            # Determine resampling mode
-            if hasattr(Image, 'Resampling'):
-                resample_mode = Image.Resampling.LANCZOS
-            else:
-                resample_mode = Image.LANCZOS  # For older versions
-
-            # Load and resize the eye images to 50x35 pixels
-            eye_open_image = Image.open(eye_open_path)
-            eye_open_image = eye_open_image.resize((50, 35), resample=resample_mode)
-            eye_open_image.verify()
-            eye_open_image = Image.open(eye_open_path).resize((50, 35), resample=resample_mode)
-            self.eye_open_photo = ImageTk.PhotoImage(eye_open_image)
-            logging.debug("eye_open.png loaded successfully.")
-
-            eye_closed_image = Image.open(eye_closed_path)
-            eye_closed_image = eye_closed_image.resize((50, 35), resample=resample_mode)
-            eye_closed_image.verify()
-            eye_closed_image = Image.open(eye_closed_path).resize((50, 35), resample=resample_mode)
-            self.eye_closed_photo = ImageTk.PhotoImage(eye_closed_image)
-            logging.debug("eye_closed.png loaded successfully.")
-
-        except Exception as e:
-            logging.error(f"Failed to load eye images: {e}")
-            self.eye_open_photo = None
-            self.eye_closed_photo = None
-
-        # Create Eye Indicator Frame in the Upper Right Corner
-        self.eye_frame = ttk.Frame(self.root)
-        self.eye_frame.place(relx=1.0, rely=0.0, anchor='ne', x=-10, y=10)  # 10 pixels padding from top-right
-
-        # Eye Image Label
-        if self.eye_closed_photo and self.eye_open_photo:
-            self.eye_label = ttk.Label(self.eye_frame, image=self.eye_closed_photo)
-            self.eye_label.image = self.eye_closed_photo  # Keep a reference
-            self.eye_label.pack(side=tk.LEFT, padx=(0, 10))  # 10 pixels padding to the right of the image
-        else:
-            self.eye_label = ttk.Label(self.eye_frame, text="Eye Image\nMissing", foreground="red")
-            self.eye_label.pack(side=tk.LEFT, padx=(0, 10))
-
-        # Attention Level Label
-        self.attention_label = ttk.Label(self.eye_frame, text="Attention: 0%", font=("Helvetica", 12))
-        self.attention_label.pack(side=tk.LEFT)
+        # Optional: Add Attention Label
+        self.attention_label = ttk.Label(self.root, text="Attention: 0%", font=("Helvetica", 12))
+        self.attention_label.pack(side=tk.TOP)
 
         # State Display Label
         self.state_label = ttk.Label(self.root, text="State: Normal", font=("Helvetica", 16))
@@ -1261,34 +1207,26 @@ class App:
                         canvas_color = state_color_map.get(current_state, '#000000')
                         self.canvas.config(bg=canvas_color)
 
-                # Update State, Energy, and Coherence Labels
-                if 'state' in data:
-                    current_state = data['state']
-                    self.state_label.config(text=f"State: {current_state}")
+            # Update State, Energy, and Coherence Labels
+            if 'state' in data:
+                current_state = data['state']
+                self.state_label.config(text=f"State: {current_state}")
 
-                if 'energy' in data:
-                    current_energy = data['energy']
-                    self.energy_label.config(text=f"Energy: {current_energy:.2f}%")
+            if 'energy' in data:
+                current_energy = data['energy']
+                self.energy_label.config(text=f"Energy: {current_energy:.2f}%")
 
-                if 'coherence' in data:
-                    current_coherence = data['coherence']
-                    self.coherence_label.config(text=f"Coherence: {current_coherence:.2f}")
+            if 'coherence' in data:
+                current_coherence = data['coherence']
+                self.coherence_label.config(text=f"Coherence: {current_coherence:.2f}")
 
-                # Update Eye Indicator and Attention Level
-                if 'attention_level' in data:
-                    attention = data['attention_level']
-                    # Update attention label
-                    self.attention_label.config(text=f"Attention: {int(attention * 100)}%")
-                    # Update eye image based on attention level
-                    if self.eye_open_photo and self.eye_closed_photo:
-                        if attention >= 0.7:
-                            # High attention - Open Eye
-                            self.eye_label.config(image=self.eye_open_photo)
-                            self.eye_label.image = self.eye_open_photo  # Keep reference
-                        else:
-                            # Low attention - Closed Eye
-                            self.eye_label.config(image=self.eye_closed_photo)
-                            self.eye_label.image = self.eye_closed_photo  # Keep reference
+            # Update Attention Level Progress Bar and Label
+            if 'attention_level' in data:
+                attention = data['attention_level']
+                # Update attention progress bar
+                self.attention_progress['value'] = attention * 100  # Progressbar expects a value between 0 and 100
+                # Update attention label
+                self.attention_label.config(text=f"Attention: {int(attention * 100)}%")
 
         except Exception as e:
             logging.error(f"Error updating GUI: {e}")
