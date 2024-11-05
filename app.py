@@ -1072,6 +1072,7 @@ class App:
         self.system = AdaptiveSystem(self.gui_queue, self.vis_queue, self.config)
         self.node_visualizer = None  # Will hold the NodeVisualizer instance
         self.eeg_visualizer = None  # Will hold the EEGVisualizer instance
+        self.latest_data = {}  # Store the latest data for GUI updates
         self.create_widgets()
         self.update_gui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1166,6 +1167,8 @@ class App:
         try:
             while not self.gui_queue.empty():
                 data = self.gui_queue.get_nowait()
+                self.latest_data = data  # Store the latest data
+
                 if 'frame' in data and data['frame'] is not None:
                     # Process frame for display
                     frame = cv2.cvtColor(data['frame'], cv2.COLOR_BGR2RGB)
@@ -1207,26 +1210,26 @@ class App:
                         canvas_color = state_color_map.get(current_state, '#000000')
                         self.canvas.config(bg=canvas_color)
 
-            # Update State, Energy, and Coherence Labels
-            if 'state' in data:
-                current_state = data['state']
-                self.state_label.config(text=f"State: {current_state}")
+                # Update State, Energy, and Coherence Labels
+                if 'state' in self.latest_data:
+                    current_state = self.latest_data['state']
+                    self.state_label.config(text=f"State: {current_state}")
 
-            if 'energy' in data:
-                current_energy = data['energy']
-                self.energy_label.config(text=f"Energy: {current_energy:.2f}%")
+                if 'energy' in self.latest_data:
+                    current_energy = self.latest_data['energy']
+                    self.energy_label.config(text=f"Energy: {current_energy:.2f}%")
 
-            if 'coherence' in data:
-                current_coherence = data['coherence']
-                self.coherence_label.config(text=f"Coherence: {current_coherence:.2f}")
+                if 'coherence' in self.latest_data:
+                    current_coherence = self.latest_data['coherence']
+                    self.coherence_label.config(text=f"Coherence: {current_coherence:.2f}")
 
-            # Update Attention Level Progress Bar and Label
-            if 'attention_level' in data:
-                attention = data['attention_level']
-                # Update attention progress bar
-                self.attention_progress['value'] = attention * 100  # Progressbar expects a value between 0 and 100
-                # Update attention label
-                self.attention_label.config(text=f"Attention: {int(attention * 100)}%")
+                # Update Attention Level Progress Bar and Label
+                if 'attention_level' in self.latest_data:
+                    attention = self.latest_data['attention_level']
+                    # Update attention progress bar
+                    self.attention_progress['value'] = attention * 100  # Progressbar expects a value between 0 and 100
+                    # Update attention label
+                    self.attention_label.config(text=f"Attention: {int(attention * 100)}%")
 
         except Exception as e:
             logging.error(f"Error updating GUI: {e}")
