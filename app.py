@@ -252,6 +252,9 @@ class AdaptiveNetwork:
             self.hub_coherence_history.append(hub_coherence_value)
             self.coherence = hub_coherence_value  # Update network coherence
 
+            # Log coherence calculation
+            logging.info(f"Computed coherence in update_hub: {self.coherence}")
+
             # Hub influence adjustments
             self.hub.state = np.tanh(hub_coherence_value * self.hub_influence_factor)
             # Hub influences nodes
@@ -417,6 +420,7 @@ class EEGSimulator:
             phase_coupling += np.exp(1j * phase)
             coherence = np.abs(phase_coupling) / len(phase)
             hub_coherence_value = np.mean(coherence) / SWEET_SPOT_RATIO  # Normalize by Sweet Spot Ratio
+            logging.info(f"Computed coherence in EEGSimulator: {hub_coherence_value}")
             return hub_coherence_value
 
 class EEGVisualizer:
@@ -648,7 +652,8 @@ class AdaptiveSystem:
                         delta_energy += 0.5
 
                     self.network.energy = np.clip(self.network.energy + delta_energy, 0.0, 100.0)
-                    self.network.coherence = np.clip(self.network.coherence + delta_coherence, 0.0, 100.0)
+                    # Removed direct coherence update
+                    # self.network.coherence = np.clip(self.network.coherence + delta_coherence, 0.0, 100.0)
 
                     logging.debug(f"Updated Energy: {self.network.energy}, Updated Coherence: {self.network.coherence}")
 
@@ -696,7 +701,7 @@ class AdaptiveSystem:
                             self.network.add_node()
                         self.network.prune_nodes()
                         self.network.process_connections()
-                        self.network.update_hub()
+                        self.network.update_hub()  # Coherence is updated here
                         self.network.propagate_waves(current_time)
                         self.network.update_cells()
                         self.last_growth_time = current_time
@@ -782,7 +787,7 @@ class AdaptiveSystem:
                         id=int(node_id),
                         device=self.device,
                         position=node_info['position'],
-                        connections={int(k): np.array(v) for k, v in node_info['connections'].items()}
+                        connections={int(k): float(v) for k, v in node_info['connections'].items()}
                     )
                     self.network.nodes[int(node_id)].state_info = state
             logging.info(f"System loaded from {filepath}.")
