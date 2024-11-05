@@ -1,4 +1,4 @@
-## Claude and chatgpt were guiding me - a monke to develop: 
+## Claude and chatgpt think they figured out what makes consciousness tick: 
 
 ## Adaptive System Demonstrator: Universal Hub Architecture of Consciousness
 
