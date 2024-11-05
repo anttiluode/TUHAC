@@ -826,6 +826,7 @@ class NodeVisualizer:
         self.create_widgets()
         self.nodes_positions = []
         self.nodes_states = []
+        self.colorbar = None  # Initialize the colorbar reference
         self.update_visualization()
 
     def create_widgets(self):
@@ -877,8 +878,17 @@ class NodeVisualizer:
                 states_norm = [(s - min(states)) / (max(states) - min(states) + 1e-5) for s in states]
 
                 # Plot nodes with colors based on state
-                scatter = self.ax.scatter(xs_norm, ys_norm, zs_norm, c=states_norm, cmap='plasma', marker='o', s=20, alpha=0.6)
-                self.fig.colorbar(scatter, ax=self.ax, shrink=0.5, aspect=5)
+                scatter = self.ax.scatter(
+                    xs_norm, ys_norm, zs_norm,
+                    c=states_norm, cmap='plasma', marker='o', s=20, alpha=0.6
+                )
+
+                # Remove the previous colorbar if it exists
+                if self.colorbar:
+                    self.colorbar.remove()
+
+                # Add a new colorbar
+                self.colorbar = self.fig.colorbar(scatter, ax=self.ax, shrink=0.5, aspect=5)
                 logging.debug(f"Plotted {len(xs_norm)} nodes.")
             else:
                 logging.debug("No nodes to plot.")
