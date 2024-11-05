@@ -2,6 +2,8 @@
 
 ## Adaptive System Demonstrator: Universal Hub Architecture of Consciousness
 
+(It probably is BS right?)
+
 This repository contains a technology demonstrator of the Universal Hub Architecture of Consciousness, a theoretical framework proposing a central hub that maintains coherence across different states of consciousness while allowing flexible adaptation during state transitions.
 
 This adaptive system simulates key aspects of the theory through computational modeling, artificial neural networks, and EEG signal simulation. It provides an interactive GUI for visualization and experimentation.
