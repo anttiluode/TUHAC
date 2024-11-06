@@ -2,9 +2,11 @@
 
 ## Adaptive System Demonstrator: Universal Hub Architecture of Consciousness
 
-(It probably is BS right?)
+(It is BS) 
 
-A Deepdive: https://youtu.be/sUZmWqtDu_4
+Video about chasing the theory of consciousness Claude made for 3 days: 
+
+https://youtu.be/pDgnkUfLs0Y
 
 This repository contains a technology demonstrator of the Universal Hub Architecture of Consciousness, a theoretical framework proposing a central hub that maintains coherence across different states of consciousness while allowing flexible adaptation during state transitions.
 
